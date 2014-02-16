@@ -272,7 +272,7 @@ func LoadConfig() (configs []Config) {
 	return
 }
 
-func AddConfig(nc Config) {
+func SetConfig(nc Config) {
 	configs := LoadConfig()
 	if c, _ := findConfig(configs, nc.Ssid, nc.Bssid); c == nil {
 		configs = append(configs, nc)
