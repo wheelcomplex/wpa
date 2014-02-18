@@ -20,6 +20,7 @@ func main() {
 	cli := flag.Bool("cli", false, "cli mode")
 	scan := flag.Bool("scan", false, "do scan")
 	load := flag.Bool("load", false, "do load config")
+	ctrl := flag.Bool("ctrl", false, "do ctrl loop")
 	flag.Parse()
 
 	if *load {
@@ -37,6 +38,11 @@ func main() {
 		f := file.AppendTo("/var/log/docli.log").LimitSize(1024*128)
 		log.SetOutput(f)
 		wpa.DoCli(flag.Args())
+		return
+	}
+
+	if *ctrl {
+		CtrlServer()
 		return
 	}
 }

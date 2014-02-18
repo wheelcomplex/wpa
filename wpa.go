@@ -14,20 +14,14 @@ import (
 	"github.com/go-av/gexpect"
 )
 
-const (
-	IDLE = iota
-	CONNECTING
-	COMPLETED
-)
-
 type Network struct {
-	Stat string
+	Stat string // ASSOSIACTING, COMPLETED ...
 	Ssid string
 	Bssid string
 	KeyMgmt string // "WPA-PSK", "WEP", ""
 	SignalLevel int
 
-	*Config
+	Config *Config
 }
 
 type Config struct {
@@ -99,7 +93,7 @@ func findConfig(configs []Config, ssid, bssid string) (*Config, int) {
 	return nil, -1
 }
 
-func status() (stat string, id int, ssid string) {
+func status() (stat string, id int, ssid, bssid string) {
 	r := runCli("status")
 	log.Println("wpa:", "get status")
 
@@ -117,6 +111,7 @@ func status() (stat string, id int, ssid string) {
 			break
 		}
 		getstr(l, "ssid=", &ssid)
+		getstr(l, "bssid=", &bssid)
 		getstr(l, "wpa_state=", &stat)
 		getint(l, "id=", &id)
 	}
@@ -127,28 +122,18 @@ func status() (stat string, id int, ssid string) {
 }
 
 func Status() (stat string) {
-	stat, _, _ = status()
+	stat, _, _, _ = status()
 	return
 }
 
-func Scan() (results []Network) {
-	child := spawnCli()
-
-	br := bufio.NewReader(child.F)
+func ScanResults() (results []Network) {
 	configs := LoadConfig()
-	stat, id, _ := status()
+	stat, id, _, _ := status()
 
-	child.Expect("> ")
+	r := runCli("scan_results")
+	br := bufio.NewReader(r)
 
-	child.SendLine("scan")
-	log.Println("wpa.scan:", "send scan")
-	child.Expect("> ")
-
-	child.Expect("<3>CTRL-EVENT-SCAN-RESULTS")
-	log.Println("wpa.scan:", "got scan results")
-
-	child.SendLine("scan_results")
-	log.Println("wpa.scan:", "read scan results")
+	log.Println("wpa.scan_results:", "start read")
 
 	for {
 		l, err := br.ReadString('\n')
@@ -176,7 +161,7 @@ func Scan() (results []Network) {
 		if len(f) >= 4 {
 			n.Ssid = strings.Join(f[4:], " ")
 		}
-		log.Println("wpa.scan:", len(results), n)
+		log.Println("wpa.scan_results:", len(results), n)
 
 		i := -1
 		n.Config, i = findConfig(configs, n.Ssid, n.Bssid)
@@ -184,7 +169,7 @@ func Scan() (results []Network) {
 			n.Stat = stat
 
 			// move to front
-			log.Println("wpa.scan:   >>current asossiacting")
+			log.Println("wpa.scan_results:   >>current asossiacting")
 			if len(results) > 0 {
 				tmp := results[0]
 				results[0] = n
@@ -194,8 +179,24 @@ func Scan() (results []Network) {
 		results = append(results, n)
 	}
 
-	child.Close()
 	return
+}
+
+func Scan() (results []Network) {
+	child := spawnCli()
+
+	child.Expect("> ")
+
+	child.SendLine("scan")
+	log.Println("wpa.scan:", "send scan")
+	child.Expect("> ")
+
+	child.Expect("<3>CTRL-EVENT-SCAN-RESULTS")
+	log.Println("wpa.scan:", "got scan results")
+
+	child.Close()
+
+	return ScanResults()
 }
 
 func SaveConfig(configs []Config) {
@@ -207,21 +208,24 @@ func SaveConfig(configs []Config) {
 	fmt.Fprintln(f, "ctrl_interface=DIR=/var/run/wpa")
 	for _, n := range configs {
 		fmt.Fprintln(f, "network={")
-		fmt.Fprintln(f, `ssid="%s"`, n.Ssid)
-		fmt.Fprintln(f, `bssid="%s"`, n.Bssid)
-		fmt.Fprintln(f, `key_mgmt=%s`, n.KeyMgmt)
-		fmt.Fprintln(f, `psk="%s"`, n.Key)
+		fmt.Fprintf(f, "ssid=\"%s\"\n", n.Ssid)
+		fmt.Fprintf(f, "bssid=%s\n", n.Bssid)
+		if n.KeyMgmt == "" {
+			fmt.Fprintf(f, "key_mgmt=%s\n", "NONE")
+		} else {
+			fmt.Fprintf(f, "key_mgmt=%s\n", n.KeyMgmt)
+			fmt.Fprintf(f, "psk=\"%s\"\n", n.Key)
+		}
 		if n.Priority != 0 {
-			fmt.Fprintln(f, `priority=%d`, n.Priority)
+			fmt.Fprintf(f, "priority=%d\n", n.Priority)
 		}
 		if !n.Static {
-			fmt.Fprintln(f, `#dhcp=1`)
+			fmt.Fprintln(f, "#static=1")
 		} else {
-			fmt.Fprintln(f, `#dhcp=0`)
-			fmt.Fprintln(f, `#ip=%s`, n.Ip)
-			fmt.Fprintln(f, `#netmask=%s`, n.Netmask)
-			fmt.Fprintln(f, `#gateway=%s`, n.Gateway)
-			fmt.Fprintln(f, `#dns=%s`, n.Dns)
+			fmt.Fprintf(f, "#ip=%s\n", n.Ip)
+			fmt.Fprintf(f, "#netmask=%s\n", n.Netmask)
+			fmt.Fprintf(f, "#gateway=%s\n", n.Gateway)
+			fmt.Fprintf(f, "#dns=%s\n", n.Dns)
 		}
 		fmt.Fprintln(f, "}")
 	}
@@ -272,12 +276,34 @@ func LoadConfig() (configs []Config) {
 	return
 }
 
+func DelConfig(nc Config) {
+	configs := LoadConfig()
+	_, i := findConfig(configs, nc.Ssid, nc.Bssid)
+	if i != -1 {
+		configs = append(configs[0:i], configs[i+1:]...)
+	}
+	SaveConfig(configs)
+}
+
 func SetConfig(nc Config) {
 	configs := LoadConfig()
 	if c, _ := findConfig(configs, nc.Ssid, nc.Bssid); c == nil {
 		configs = append(configs, nc)
 	}
 	SaveConfig(configs)
+}
+
+func WaitCompleted(ssid, bssid string, timeout time.Duration) bool {
+	for timeout > 0 {
+		stat, _, ssid1, bssid1 := status()
+		if ssid1 == ssid && bssid1 == bssid && stat == "COMPLETED" {
+			return true
+		}
+		dur := time.Second*1
+		time.Sleep(dur)
+		timeout -= dur
+	}
+	return false
 }
 
 func Connect(ssid, bssid string) {
