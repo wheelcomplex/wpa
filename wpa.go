@@ -86,7 +86,7 @@ func getbool(v, pref string, out *bool) {
 
 func findConfig(configs []Config, ssid, bssid string) (*Config, int) {
 	for i, c := range configs {
-		if c.Bssid == bssid && c.Ssid == ssid {
+		if c.Ssid == ssid && (c.Bssid == "" || c.Bssid == bssid) {
 			return &configs[i], i
 		}
 	}
@@ -161,7 +161,6 @@ func ScanResults() (results []Network) {
 		if len(f) >= 4 {
 			n.Ssid = strings.Join(f[4:], " ")
 		}
-		log.Println("wpa.scan_results:", len(results), n)
 
 		i := -1
 		n.Config, i = findConfig(configs, n.Ssid, n.Bssid)
@@ -176,6 +175,7 @@ func ScanResults() (results []Network) {
 				n = tmp
 			}
 		}
+		log.Println("wpa.scan_results:", len(results), n, "config:", i)
 		results = append(results, n)
 	}
 
@@ -209,8 +209,10 @@ func SaveConfig(configs []Config) {
 	for _, n := range configs {
 		fmt.Fprintln(f, "network={")
 		fmt.Fprintf(f, "ssid=\"%s\"\n", n.Ssid)
-		fmt.Fprintf(f, "bssid=%s\n", n.Bssid)
-		if n.KeyMgmt == "" {
+		if n.Bssid != "" {
+			fmt.Fprintf(f, "bssid=%s\n", n.Bssid)
+		}
+		if n.KeyMgmt == "" || n.KeyMgmt == "NONE" {
 			fmt.Fprintf(f, "key_mgmt=%s\n", "NONE")
 		} else {
 			fmt.Fprintf(f, "key_mgmt=%s\n", n.KeyMgmt)
@@ -218,6 +220,9 @@ func SaveConfig(configs []Config) {
 		}
 		if n.Priority != 0 {
 			fmt.Fprintf(f, "priority=%d\n", n.Priority)
+		}
+		if n.ScanSsid {
+			fmt.Fprintf(f, "scan_ssid=1\n")
 		}
 		if !n.Static {
 			fmt.Fprintln(f, "#static=1")
@@ -296,7 +301,9 @@ func SetConfig(nc Config) {
 func WaitCompleted(ssid, bssid string, timeout time.Duration) bool {
 	for timeout > 0 {
 		stat, _, ssid1, bssid1 := status()
-		if ssid1 == ssid && bssid1 == bssid && stat == "COMPLETED" {
+		if ssid1 == ssid &&
+			(bssid == "" || bssid1 == bssid) &&
+			stat == "COMPLETED" {
 			return true
 		}
 		dur := time.Second*1
@@ -306,17 +313,32 @@ func WaitCompleted(ssid, bssid string, timeout time.Duration) bool {
 	return false
 }
 
-func Connect(ssid, bssid string) {
+func Connect(ssid, bssid string, nc Config) bool {
 	configs := LoadConfig()
 	for i := range configs {
 		configs[i].Priority = 0
 	}
 	if c, _ := findConfig(configs, ssid, bssid); c != nil {
 		c.Priority = 1
+	} else {
+		nc.Ssid = ssid
+		nc.Bssid = bssid
+		nc.Priority = 1
+		configs = append(configs, nc)
 	}
 	SaveConfig(configs)
+
+	log.Println("wpa.connect", "reconfigure and reassociate")
 	runCli("reconfigure")
 	runCli("reassociate")
+
+	if WaitCompleted(ssid, bssid, time.Second*10) {
+		return true
+	} else {
+		log.Println("wpa.connect", "failed and del config")
+		DelConfig(nc)
+		return false
+	}
 }
 
 func DoCli(args []string) {
