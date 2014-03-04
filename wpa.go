@@ -155,6 +155,9 @@ func ScanResults() (results []Network) {
 		n.Bssid = f[0]
 		fmt.Sscanf(f[2], "%d", &n.SignalLevel)
 
+		if strings.HasPrefix(f[3], "[WEP") {
+			n.KeyMgmt = "WEP"
+		}
 		if strings.HasPrefix(f[3], "[WPA") {
 			n.KeyMgmt = "WPA-PSK"
 		}
